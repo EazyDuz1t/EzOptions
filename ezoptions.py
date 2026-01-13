@@ -497,15 +497,19 @@ def fetch_options_for_date(ticker, date, S=None):
             except Exception:
                 pass # Date might not exist for this ticker
 
-        # Build reference grid from SPX data (without adding SPX options to the result)
+        # Build reference grid from SPX data and add SPX options to the result
         grid_strikes = set()
         try:
-            # We fetch SPX data just to get the strikes grid
+            # Fetch SPX data to get the strikes grid
             spx_c, spx_p = fetch_options_for_date("^SPX", date, spx_price)
             if not spx_c.empty and 'strike' in spx_c.columns:
                 grid_strikes.update(spx_c['strike'].tolist())
+                # Add SPX calls to result (no scaling needed, factor = 1.0)
+                calls_list.append(spx_c)
             if not spx_p.empty and 'strike' in spx_p.columns:
                 grid_strikes.update(spx_p['strike'].tolist())
+                # Add SPX puts to result (no scaling needed, factor = 1.0)
+                puts_list.append(spx_p)
         except Exception:
             pass
             
