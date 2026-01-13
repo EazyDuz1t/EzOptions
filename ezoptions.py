@@ -497,25 +497,20 @@ def fetch_options_for_date(ticker, date, S=None):
             except Exception:
                 pass # Date might not exist for this ticker
 
-        # Build reference grid from SPX data and add SPX options to the result
+        # First add SPX data (no scaling needed, factor = 1.0)
+        add_scaled_data("^SPX", spx_price, 1.0)
+        
+        # Build reference grid from SPX data
         grid_strikes = set()
-        try:
-            # Fetch SPX data to get the strikes grid
-            spx_c, spx_p = fetch_options_for_date("^SPX", date, spx_price)
-            if not spx_c.empty and 'strike' in spx_c.columns:
-                grid_strikes.update(spx_c['strike'].tolist())
-                # Add SPX calls to result (no scaling needed, factor = 1.0)
-                calls_list.append(spx_c)
-            if not spx_p.empty and 'strike' in spx_p.columns:
-                grid_strikes.update(spx_p['strike'].tolist())
-                # Add SPX puts to result (no scaling needed, factor = 1.0)
-                puts_list.append(spx_p)
-        except Exception:
-            pass
+        if calls_list and 'strike' in calls_list[0].columns:
+            grid_strikes.update(calls_list[0]['strike'].tolist())
+        if puts_list and 'strike' in puts_list[0].columns:
+            grid_strikes.update(puts_list[0]['strike'].tolist())
             
         if grid_strikes:
             spx_strikes_grid = np.array(sorted(list(grid_strikes)))
         
+        # Then add other components with scaling
         if spy_factor: add_scaled_data("SPY", spy_price, spy_factor)
         if qqq_factor: add_scaled_data("QQQ", qqq_price, qqq_factor)
         if iwm_factor: add_scaled_data("IWM", iwm_price, iwm_factor)
