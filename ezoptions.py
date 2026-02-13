@@ -80,7 +80,6 @@ def save_user_settings():
         'fibonacci_levels',
         'vwap_enabled',
         'exposure_metric',
-        'exposure_perspective',
         'delta_adjusted_exposures',
         'calculate_in_notional',
         'saved_exposure_heatmap_type',
@@ -1813,14 +1812,6 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
     total_call_volume = calls['volume'].sum()
     total_put_volume = puts['volume'].sum()
     total_net_volume = total_call_volume - total_put_volume
-    
-    # Apply perspective (Dealer = Short, flip the sign of Net values)
-    perspective = st.session_state.get('exposure_perspective', 'Customer')
-    if perspective == 'Dealer':
-        net_oi = net_oi * -1
-        net_volume = net_volume * -1
-        total_net_oi = total_net_oi * -1
-        total_net_volume = total_net_volume * -1
 
     date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
 
@@ -2459,12 +2450,6 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
     total_call_volume = calls['volume'].sum()
     total_put_volume = puts['volume'].sum()
     total_net_volume = total_call_volume - total_put_volume
-    
-    # Apply perspective (Dealer = Short, flip the sign of Net values)
-    perspective = st.session_state.get('exposure_perspective', 'Customer')
-    if perspective == 'Dealer':
-        net_volume = net_volume * -1
-        total_net_volume = total_net_volume * -1
 
     date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
 
@@ -3739,7 +3724,6 @@ def reset_session_state():
         'fibonacci_levels',
         'vwap_enabled',
         'exposure_metric',
-        'exposure_perspective',
         'delta_adjusted_exposures',
         'calculate_in_notional',
         'global_selected_expiries',
@@ -4317,18 +4301,6 @@ def chart_settings():
             index=['Open Interest', 'Volume', 'Max OI vs Volume'].index(st.session_state.exposure_metric) if st.session_state.exposure_metric in ['Open Interest', 'Volume', 'Max OI vs Volume'] else 0,
             key='exposure_metric',
             help="Open Interest: Use raw OI for exposure calculations.\nVolume: Use today's volume only.\nMax OI vs Volume: Uses the greater of OI or Volume for each contract."
-        )
-
-        # Initialize perspective setting
-        if 'exposure_perspective' not in st.session_state:
-            st.session_state.exposure_perspective = "Customer"
-        
-        st.selectbox(
-            "Exposure Perspective:",
-            options=["Customer", "Dealer"],
-            index=["Customer", "Dealer"].index(st.session_state.exposure_perspective),
-            key='exposure_perspective',
-            help="Customer: View calculated exposures for Long option positions.\nDealer: View exposures for Short option positions (Inverse of Customer)."
         )
 
         # Initialize delta-adjusted exposures setting
@@ -4928,115 +4900,67 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     return calls, puts, S, t, selected_expiry, today
 
 def get_exposure_explanation(exposure_type):
-    """Get explanation text for each exposure type based on selected perspective."""
-    perspective = st.session_state.get('exposure_perspective', 'Customer')
-    is_dealer = perspective == 'Dealer'
+    """Get standard explanation text for each exposure type."""
     
-    # Precise Explanations of Market Mechanics
     explanations = {
         "GEX": {
             "title": "Gamma Exposure (GEX)",
             "description": "Gamma measures the rate of change of Delta. It indicates how much hedging activity is required as price moves.",
-            "customer": """
-**Customer Perspective (Long Options):**
-- **Calls (Positive GEX):** Customer is Long Call / Dealer is Short Call (Negative Gamma). As price rises, Dealer must **BUY** to hedge.
-- **Puts (Positive GEX):** Customer is Long Put / Dealer is Short Put (Negative Gamma). As price falls, Dealer must **SELL** to hedge.
-- **Implication:** Positive Customer GEX = Dealer Short Gamma = **Volatility Amplification** (Dealer chases price).
-- **Net Negative GEX:** Customer is Short / Dealer is Long. Dealer hedges by buying low/selling high (**Volatility Suppression**).
-            """,
-            "dealer": """
-**Dealer Perspective (Short Options):**
-- **Negative GEX:** Dealers are Short Gamma. They must **Buy High** and **Sell Low** to stay hedged.
-- **Market Impact:** This hedging activity **amplifies** price movement (High Volatility).
-- **Positive GEX:** Dealers are Long Gamma. They **Buy Low** and **Sell High**.
-- **Market Impact:** This hedging activity **suppresses** price movement (Low Volatility / Pinning).
+            "explanation": """
+- **Positive GEX:** Net long gamma across the market. Dealers hedge by **buying dips** and **selling rallies**, which **suppresses** volatility and can cause price pinning.
+- **Negative GEX:** Net short gamma across the market. Dealers hedge by **buying rallies** and **selling dips**, which **amplifies** volatility and trending moves.
+- **Key Level:** The GEX flip point (where net GEX crosses zero) often acts as a pivot — above it, expect stability; below it, expect larger moves.
             """
         },
         "VEX": {
             "title": "Vanna Exposure (VEX)",
             "description": "Vanna measures delta sensitivity to changes in Implied Volatility (dDelta/dVol).",
-            "customer": """
-**Customer Perspective (Long Options):**
-- **Call Vanna (Positive):** Customer Long OTM Call. If IV rises, Call Delta increases. Dealer (Short) becomes more Short Delta -> Must **BUY**.
-- **Put Vanna (Negative):** Customer Long OTM Put. If IV rises, Put Delta becomes more Negative. Dealer (Short) becomes more Long Delta (Short Put Delta increases). Dealer must **SELL** to hedge (short more stock).
-- **Flow:** Rising IV forces Dealers to Buy against Calls and Sell against Puts.
-            """,
-            "dealer": """
-**Dealer Perspective (Short Options):**
-- **Negative Vanna (Short Calls):** IV Rise -> Dealer Short Delta becomes more negative -> Dealer **Buys**.
-- **Positive Vanna (Short Puts):** IV Rise -> Dealer Short Delta becomes more positive -> Dealer **Sells**.
-- **Key Insight:** Vanna flows often drive the market during VIX spikes or crushes.
+            "explanation": """
+- **Positive Vanna:** When IV falls, delta exposure increases — dealers must **buy** to hedge.
+- **Negative Vanna:** When IV rises, delta exposure increases — dealers must **sell** to hedge.
+- **Key Insight:** Vanna flows are a major driver during VIX spikes (dealers sell) and VIX crushes (dealers buy), often reinforcing the move.
             """
         },
         "DEX": {
             "title": "Delta Exposure (DEX)",
-            "description": "Delta Exposure represents the aggregate static directional risk in the market.",
-            "customer": """
-**Customer Perspective:**
-- **Positive DEX:** Customers are Net Long Delta (Bullish).
-- **Negative DEX:** Customers are Net Short Delta (Bearish).
-            """,
-            "dealer": """
-**Dealer Perspective:**
-- **Negative DEX:** Dealers are Net Short Delta (must carry Long Stock hedge).
-- **Positive DEX:** Dealers are Net Long Delta (must carry Short Stock hedge).
-- **Implication:** Large Dealer positions can act as supply/demand overhangs.
+            "description": "Delta Exposure represents the aggregate directional risk in the options market.",
+            "explanation": """
+- **Positive DEX:** Net long delta — the market is positioned bullishly.
+- **Negative DEX:** Net short delta — the market is positioned bearishly.
+- **Implication:** Large delta imbalances can create supply/demand pressure as dealers hedge their positions.
             """
         },
         "Charm": {
             "title": "Charm Exposure (Delta Decay)",
             "description": "Charm measures the change in Delta due to the passage of time (dDelta/dt).",
-            "customer": """
-**Customer Perspective (Long Options):**
-- **Positive Charm (ITM Calls / OTM Puts):** Delta increases (becomes more positive) over time.
-- **Negative Charm (OTM Calls / ITM Puts):** Delta decreases (becomes more negative) over time.
-            """,
-            "dealer": """
-**Dealer Perspective (Short Options):**
-- **Negative Charm (Short ITM Calls / OTM Puts):** Dealer Short Delta becomes more negative (decreases) over time. Dealer must **BUY** flows into close.
-- **Positive Charm (Short OTM Calls / ITM Puts):** Dealer Short Delta becomes less negative (increases) over time. Dealer must **SELL** flows into close.
+            "explanation": """
+- **Positive Charm:** Delta increases over time — dealers accumulate directional exposure and may need to **sell** into the close.
+- **Negative Charm:** Delta decreases over time — dealers lose directional exposure and may need to **buy** into the close.
+- **Key Insight:** Charm-driven flows often create predictable end-of-day buying or selling pressure.
             """
         },
         "Speed": {
             "title": "Speed Exposure (Gamma of Gamma)",
-            "description": "Speed measures how quickly Gamma changes as spot price moves.",
-            "customer": """
-**Customer Perspective:**
-- **High Speed:** Gamma changes rapidly with price.
-- **Risk:** Indicates zones where instability (Gamma) can appear suddenly.
-            """,
-            "dealer": """
-**Dealer Perspective:**
-- **Hedging Risk:** High Speed means the "Gamma Trap" tightens quickly.
-- **Impact:** Hedging requirements accelerate non-linearly.
+            "description": "Speed measures how quickly Gamma changes as spot price moves (dGamma/dSpot).",
+            "explanation": """
+- **High Speed:** Gamma changes rapidly with price — hedging requirements accelerate non-linearly.
+- **Risk:** High Speed zones indicate where gamma can appear or vanish suddenly, creating potential for cascading hedging flows.
             """
         },
         "Vomma": {
             "title": "Vomma Exposure (Vol of Vol)",
-            "description": "Vomma measures the convexity of Vega—how sensitive Vega is to changes in IV.",
-            "customer": """
-**Customer Perspective:**
-- **Long Vomma:** Position gains value at an accelerating rate if IV spikes.
-- **Wing Risk:** Long OTM options act as "Convexity Enablers".
-            """,
-            "dealer": """
-**Dealer Perspective:**
-- **Short Vomma:** Dealer P&L suffers accelerating losses if IV spikes.
-- **Blowout Risk:** Short Vomma is the primary driver of market maker stress during crashes.
+            "description": "Vomma measures the convexity of Vega — how sensitive Vega is to changes in IV (dVega/dVol).",
+            "explanation": """
+- **Positive Vomma:** Vega increases as IV rises — OTM option positions gain value at an accelerating rate during vol spikes.
+- **Negative Vomma:** Short vomma positions suffer accelerating losses if IV spikes — this is a primary driver of market maker stress during crashes.
             """
         },
         "Color": {
             "title": "Color Exposure (Gamma Decay)",
-            "description": "Color measures the rate of change of Gamma over time.",
-            "customer": """
-**Customer Perspective:**
-- **Near Expiry:** Gamma changes rapidly (High Color).
-- **Pin Risk:** High Color indicates potential for price pinning.
-            """,
-            "dealer": """
-**Dealer Perspective:**
-- **Gamma Risk:** Measures how quickly Gamma risk escalates as expiration approaches.
-- **Hedging:** High Color implies the need for rapid, high-frequency hedging adjustments.
+            "description": "Color measures the rate of change of Gamma over time (dGamma/dt).",
+            "explanation": """
+- **High Color:** Gamma changes rapidly as expiration approaches — hedging adjustments become more frequent and aggressive.
+- **Pin Risk:** High Color near expiry indicates potential for price pinning around strikes with large open interest.
             """
         }
     }
@@ -5044,23 +4968,12 @@ def get_exposure_explanation(exposure_type):
     exp = explanations.get(exposure_type, {
         "title": f"{exposure_type} Exposure",
         "description": "Exposure measurement for options positioning.",
-        "customer": "Customer perspective shows long options positioning.",
-        "dealer": "Dealer perspective shows short options positioning (opposite of customer)."
+        "explanation": "Standard exposure metric for analyzing options market positioning."
     })
     
-    perspective_text = exp["dealer"] if is_dealer else exp["customer"]
-    
-    return exp["title"], exp["description"], perspective_text, perspective
+    return exp["title"], exp["description"], exp["explanation"]
 
 def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
-    # Apply perspective (Dealer = Short)
-    perspective = st.session_state.get('exposure_perspective', 'Customer')
-    if perspective == 'Dealer':
-        calls = calls.copy()
-        puts = puts.copy()
-        calls[exposure_type] = calls[exposure_type] * -1
-        puts[exposure_type] = puts[exposure_type] * -1
-
     # Get colors from session state at the start
     call_color = st.session_state.call_color
     put_color = st.session_state.put_color
@@ -5875,12 +5788,6 @@ def create_davi_chart(calls, puts, S, date_count=1):
     puts_df = puts_df.groupby('strike', as_index=False)['DAVI'].sum()
     puts_df['OptionType'] = 'Put'
 
-    # Apply perspective (Dealer = Short, flip the sign)
-    perspective = st.session_state.get('exposure_perspective', 'Customer')
-    if perspective == 'Dealer':
-        calls_df['DAVI'] = calls_df['DAVI'] * -1
-        puts_df['DAVI'] = puts_df['DAVI'] * -1
-
     # Calculate totals for title using the entire chain (before filtering by strike range)
     total_call_davi = calls_df['DAVI'].sum()
     total_put_davi = puts_df['DAVI'].sum()
@@ -6246,15 +6153,9 @@ if st.session_state.current_page == "OI & Volume":
                     total_call_vol = all_calls['volume'].sum()
                     total_put_vol = all_puts['volume'].sum()
                     
-                    # Calculate Net values respecting perspective
-                    perspective = st.session_state.get('exposure_perspective', 'Customer')
+                    # Calculate Net values
                     net_oi_val = total_call_oi - total_put_oi
                     net_vol_val = total_call_vol - total_put_vol
-                    
-                    if perspective == 'Dealer':
-                        # Invert Net values for Dealer perspective
-                        net_oi_val = net_oi_val * -1
-                        net_vol_val = net_vol_val * -1
                     
                     # Determine colors for Net values
                     net_oi_color = st.session_state.call_color if net_oi_val >= 0 else st.session_state.put_color
@@ -6398,46 +6299,18 @@ if st.session_state.current_page == "OI & Volume":
                     # Calculate ITM premium flow
                     itm_net_premium = itm_call_premium - itm_put_premium
                     
-                    # Apply perspective for Net Premium
-                    perspective = st.session_state.get('exposure_perspective', 'Customer')
-                    if perspective == 'Dealer':
-                        itm_net_premium = itm_net_premium * -1
-
-                    # For sentiment and ratios, we might need to be careful.
-                    # If Dealer perspective, we usually invert bullish/bearish signal.
-                    # But ratio logic (Call/Put) is hard to just "invert".
-                    # Let's keep ratio as is (Volume ratio) but invert the Net Premium value which is the main directional "$" metric.
-                    
                     itm_premium_ratio = itm_call_premium / max(itm_put_premium, 1)
                     
                     # Determine ITM premium flow sentiment
-                    # For Dealer, high Call/Put ratio (Customer Buying Calls) means Dealer Selling Calls (Bearish Exposure for Dealer)
-                    # So if Dealer, we might want to flip the sentiment label or the ratio interpretation.
-                    
-                    # Sentiment logic:
-                    # Default (Customer): > 1.5 Bullish, < 0.7 Bearish
-                    # Dealer: > 1.5 Bearish (Short Calls), < 0.7 Bullish (Short Puts)
-                    
-                    if perspective == 'Dealer':
-                        if itm_premium_ratio > 1.5:
-                            itm_sentiment = "Bearish (Dealer Short)"
-                            itm_color = st.session_state.put_color
-                        elif itm_premium_ratio < 0.7:
-                            itm_sentiment = "Bullish (Dealer Long)"
-                            itm_color = st.session_state.call_color
-                        else:
-                            itm_sentiment = "Neutral"
-                            itm_color = "white"
+                    if itm_premium_ratio > 1.5:
+                        itm_sentiment = "Bullish"
+                        itm_color = st.session_state.call_color
+                    elif itm_premium_ratio < 0.7:
+                        itm_sentiment = "Bearish"
+                        itm_color = st.session_state.put_color
                     else:
-                        if itm_premium_ratio > 1.5:
-                            itm_sentiment = "Bullish"
-                            itm_color = st.session_state.call_color
-                        elif itm_premium_ratio < 0.7:
-                            itm_sentiment = "Bearish"
-                            itm_color = st.session_state.put_color
-                        else:
-                            itm_sentiment = "Neutral"
-                            itm_color = "white"
+                        itm_sentiment = "Neutral"
+                        itm_color = "white"
                         
                     # Display premium metrics in a cleaner format with call/put ratio indicator
                     st.markdown("### Premium Summary")
@@ -6949,11 +6822,11 @@ elif st.session_state.current_page == "Gamma Exposure":
                 st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("gamma_exposure_chart"))
                 
                 # Display exposure explanation
-                exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
-                with st.expander(f"ℹ️ Understanding {exp_title} ({perspective} Perspective)", expanded=False):
+                exp_title, exp_desc, exp_text = get_exposure_explanation(exposure_type)
+                with st.expander(f"ℹ️ Understanding {exp_title}", expanded=False):
                     st.markdown(f"**{exp_title}**")
                     st.markdown(exp_desc)
-                    st.markdown(exp_perspective_text)
+                    st.markdown(exp_text)
 
 elif st.session_state.current_page == "Vanna Exposure":
     main_placeholder.empty()
@@ -7021,11 +6894,11 @@ elif st.session_state.current_page == "Vanna Exposure":
                 st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("vanna_exposure_chart"))
                 
                 # Display exposure explanation
-                exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
-                with st.expander(f"ℹ️ Understanding {exp_title} ({perspective} Perspective)", expanded=False):
+                exp_title, exp_desc, exp_text = get_exposure_explanation(exposure_type)
+                with st.expander(f"ℹ️ Understanding {exp_title}", expanded=False):
                     st.markdown(f"**{exp_title}**")
                     st.markdown(exp_desc)
-                    st.markdown(exp_perspective_text)
+                    st.markdown(exp_text)
 
 elif st.session_state.current_page == "Delta Exposure":
     main_placeholder.empty()
@@ -7093,11 +6966,11 @@ elif st.session_state.current_page == "Delta Exposure":
                 st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("delta_exposure_chart"))
                 
                 # Display exposure explanation
-                exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
-                with st.expander(f"ℹ️ Understanding {exp_title} ({perspective} Perspective)", expanded=False):
+                exp_title, exp_desc, exp_text = get_exposure_explanation(exposure_type)
+                with st.expander(f"ℹ️ Understanding {exp_title}", expanded=False):
                     st.markdown(f"**{exp_title}**")
                     st.markdown(exp_desc)
-                    st.markdown(exp_perspective_text)
+                    st.markdown(exp_text)
 
 elif st.session_state.current_page == "Charm Exposure":
     main_placeholder.empty()
@@ -7165,11 +7038,11 @@ elif st.session_state.current_page == "Charm Exposure":
                 st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("charm_exposure_chart"))
                 
                 # Display exposure explanation
-                exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
-                with st.expander(f"ℹ️ Understanding {exp_title} ({perspective} Perspective)", expanded=False):
+                exp_title, exp_desc, exp_text = get_exposure_explanation(exposure_type)
+                with st.expander(f"ℹ️ Understanding {exp_title}", expanded=False):
                     st.markdown(f"**{exp_title}**")
                     st.markdown(exp_desc)
-                    st.markdown(exp_perspective_text)
+                    st.markdown(exp_text)
 
 elif st.session_state.current_page == "Speed Exposure":
     main_placeholder.empty()
@@ -7237,11 +7110,11 @@ elif st.session_state.current_page == "Speed Exposure":
                 st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("speed_exposure_chart"))
                 
                 # Display exposure explanation
-                exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
-                with st.expander(f"ℹ️ Understanding {exp_title} ({perspective} Perspective)", expanded=False):
+                exp_title, exp_desc, exp_text = get_exposure_explanation(exposure_type)
+                with st.expander(f"ℹ️ Understanding {exp_title}", expanded=False):
                     st.markdown(f"**{exp_title}**")
                     st.markdown(exp_desc)
-                    st.markdown(exp_perspective_text)
+                    st.markdown(exp_text)
 
 elif st.session_state.current_page == "Vomma Exposure":
     main_placeholder.empty()
@@ -7309,11 +7182,11 @@ elif st.session_state.current_page == "Vomma Exposure":
                 st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("vomma_exposure_chart"))
                 
                 # Display exposure explanation
-                exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
-                with st.expander(f"ℹ️ Understanding {exp_title} ({perspective} Perspective)", expanded=False):
+                exp_title, exp_desc, exp_text = get_exposure_explanation(exposure_type)
+                with st.expander(f"ℹ️ Understanding {exp_title}", expanded=False):
                     st.markdown(f"**{exp_title}**")
                     st.markdown(exp_desc)
-                    st.markdown(exp_perspective_text)
+                    st.markdown(exp_text)
 
 elif st.session_state.current_page == "Color Exposure":
     main_placeholder.empty()
@@ -7382,11 +7255,11 @@ elif st.session_state.current_page == "Color Exposure":
                 st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("color_exposure_chart"))
                 
                 # Display exposure explanation
-                exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
-                with st.expander(f"ℹ️ Understanding {exp_title} ({perspective} Perspective)", expanded=False):
+                exp_title, exp_desc, exp_text = get_exposure_explanation(exposure_type)
+                with st.expander(f"ℹ️ Understanding {exp_title}", expanded=False):
                     st.markdown(f"**{exp_title}**")
                     st.markdown(exp_desc)
-                    st.markdown(exp_perspective_text)
+                    st.markdown(exp_text)
 
 elif st.session_state.current_page == "Dashboard":
     # Ensure previous page content is cleared
@@ -7596,8 +7469,6 @@ elif st.session_state.current_page == "Dashboard":
                             y_max = max(y_max, current_price + padding)
 
                         # Process options data (Exposure levels)
-                        # Apply perspective adjustment (Dealer = Short)
-                        perspective = st.session_state.get('exposure_perspective', 'Customer')
                         calls_exp = calls.copy()
                         puts_exp = puts.copy()
                         calls_exp['OptionType'] = 'Call'
@@ -7611,14 +7482,9 @@ elif st.session_state.current_page == "Dashboard":
                             min_strike = current_price - strike_range
                             max_strike = current_price + strike_range
                             
-                            # Filter options within strike range and apply perspective adjustment
+                            # Filter options within strike range
                             calls_filtered = calls_exp[(calls_exp['strike'] >= min_strike) & (calls_exp['strike'] <= max_strike)].copy()
                             puts_filtered = puts_exp[(puts_exp['strike'] >= min_strike) & (puts_exp['strike'] <= max_strike)].copy()
-                            
-                            # Apply perspective adjustment if Dealer perspective is selected
-                            if perspective == 'Dealer':
-                                calls_filtered[exposure_type] = calls_filtered[exposure_type] * -1
-                                puts_filtered[exposure_type] = puts_filtered[exposure_type] * -1
                             
                             # Calculate Net or Absolute Exposure
                             if exposure_type == 'GEX' and st.session_state.gex_type == 'Absolute':
@@ -8094,20 +7960,12 @@ elif st.session_state.current_page == "Dashboard":
                                         put_volume = puts['volume'].sum()
                                         call_oi = calls['openInterest'].sum()
                                         put_oi = puts['openInterest'].sum()
-                                        
-                                        # Determine Perspective
-                                        perspective = st.session_state.get('exposure_perspective', 'Customer')
 
                                         if put_volume > 0:
                                             cp_volume_ratio = call_volume / put_volume
                                             
-                                            # Determine color based on perspective (Dealer = Usually Inverse Logic for Bullish/Bearish)
-                                            # Customer > 1 (Bullish) -> Green
-                                            # Dealer > 1 (Customer Bullish = Dealer Bearish/Short) -> Red
-                                            if perspective == 'Dealer':
-                                                cp_ratio_color = st.session_state.put_color if cp_volume_ratio > 1 else st.session_state.call_color
-                                            else:
-                                                cp_ratio_color = st.session_state.call_color if cp_volume_ratio > 1 else st.session_state.put_color
+                                            # Standard: > 1 (more calls) -> Bullish -> Green
+                                            cp_ratio_color = st.session_state.call_color if cp_volume_ratio > 1 else st.session_state.put_color
                                                 
                                             options_volume_text = f"<span style='color: gray;'>Call Vol:</span> <span style='color: {st.session_state.call_color}'>{call_volume:,.0f}</span> | <span style='color: gray;'>Put Vol:</span> <span style='color: {st.session_state.put_color}'>{put_volume:,.0f}</span>"
                                             call_put_ratio_text = f" | <span style='color: gray;'>C/P Ratio:</span> <span style='color: {cp_ratio_color}'>{cp_volume_ratio:.2f}</span>"
@@ -8115,10 +7973,7 @@ elif st.session_state.current_page == "Dashboard":
                                         if put_oi > 0:
                                             cp_oi_ratio = call_oi / put_oi
                                             
-                                            if perspective == 'Dealer':
-                                                oi_ratio_color = st.session_state.put_color if cp_oi_ratio > 1 else st.session_state.call_color
-                                            else:
-                                                oi_ratio_color = st.session_state.call_color if cp_oi_ratio > 1 else st.session_state.put_color
+                                            oi_ratio_color = st.session_state.call_color if cp_oi_ratio > 1 else st.session_state.put_color
                                                 
                                             call_put_ratio_text += f" | <span style='color: gray;'>OI Ratio:</span> <span style='color: {oi_ratio_color}'>{cp_oi_ratio:.2f}</span>"
                                 except Exception as e:
@@ -8736,18 +8591,12 @@ elif st.session_state.current_page == "GEX Surface":
                                     calls = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
                                     puts = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
                                     
-                                    # Get perspective multiplier
-                                    # Customer = Long both calls and puts = positive gamma
-                                    # Dealer = Short both calls and puts = negative gamma
-                                    perspective = st.session_state.get('exposure_perspective', 'Customer')
-                                    perspective_mult = -1 if perspective == 'Dealer' else 1
-                                    
                                     for _, row in calls.iterrows():
                                         if not pd.isna(row['GEX']) and abs(row['GEX']) >= 100:
                                             all_data.append({
                                                 'strike': row['strike'],
                                                 'days': days_to_exp,
-                                                'gex': row['GEX'] * perspective_mult
+                                                'gex': row['GEX']
                                             })
                                     
                                     for _, row in puts.iterrows():
@@ -8755,7 +8604,7 @@ elif st.session_state.current_page == "GEX Surface":
                                             all_data.append({
                                                 'strike': row['strike'],
                                                 'days': days_to_exp,
-                                                'gex': row['GEX'] * perspective_mult  # Same as calls - both positive for Customer
+                                                'gex': row['GEX']
                                             })
                             except Exception as e:
                                 print(f"Error processing date {future_to_date[future]}: {e}")
@@ -9526,12 +9375,6 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 # Ensure no NaNs in exposure matrices
                 call_exposure = np.nan_to_num(call_exposure)
                 put_exposure = np.nan_to_num(put_exposure)
-                
-                # Apply perspective (Dealer = Short, flip the sign)
-                perspective = st.session_state.get('exposure_perspective', 'Customer')
-                if perspective == 'Dealer':
-                    call_exposure = call_exposure * -1
-                    put_exposure = put_exposure * -1
                 
                 # Calculate net exposure
                 if exposure_type in ['GEX', 'GEX_notional']:
