@@ -87,7 +87,8 @@ def save_user_settings():
         'highlight_highest_exposure',
         'highlight_color',
         'show_sd_move',
-        'saved_expiry_date'
+        'saved_expiry_date',
+        'auto_sync_strike_range'
     ]
     
     settings = {}
@@ -4409,18 +4410,34 @@ def chart_settings():
         # Initialize strike range in session state (as percentage)
         if 'strike_range' not in st.session_state:
             st.session_state.strike_range = 2.0  # Default 2%
-        
-        # Add strike range control (as percentage)
+
+        # Initialize auto-sync toggle
+        if 'auto_sync_strike_range' not in st.session_state:
+            st.session_state.auto_sync_strike_range = False
+
+        # If auto-sync is enabled and an implied move % is cached, apply it now (+0.5% wiggle room)
+        if st.session_state.auto_sync_strike_range and 'implied_move_pct' in st.session_state:
+            st.session_state.strike_range = round(float(st.session_state.implied_move_pct) + 0.5, 1)
+
+        # Strike range input + auto-sync toggle below
         st.number_input(
-            "Strike Range (% from current price)",
-            min_value=0.1,
-            max_value=50.0,
-            value=st.session_state.strike_range,
-            step=0.1,
-            format="%.1f",
-            help="Percentage range from current price (e.g., 1.0 = ±1%)",
-            key="strike_range"
-        )
+                "Strike Range (%)",
+                min_value=0.1,
+                max_value=50.0,
+                value=st.session_state.strike_range,
+                step=0.1,
+                format="%.1f",
+                help="Percentage range from current price (e.g., 1.0 = ±1%)",
+                key="strike_range",
+                disabled=st.session_state.auto_sync_strike_range
+            )
+        st.toggle(
+                "Sync to Expected Move",
+                value=st.session_state.auto_sync_strike_range,
+                key='auto_sync_strike_range',
+                help="Auto-sync Strike Range to Expected Move (ATM straddle) + 0.5% wiggle room",
+                on_change=save_user_settings
+            )
 
         if 'chart_type' not in st.session_state:
             st.session_state.chart_type = 'Bar'  # Default chart type
@@ -6686,7 +6703,17 @@ elif st.session_state.current_page == "Gamma Exposure":
                 if all_calls.empty and all_puts.empty:
                     st.warning("No options data available for the selected dates.")
                     st.stop()
-                
+
+                # Cache implied move % for auto-sync strike range feature
+                if 'extracted_expiry' in all_calls.columns and not all_calls.empty and not all_puts.empty:
+                    _nearest_expiry = pd.to_datetime(selected_expiry_dates[0]).date()
+                    _nc = all_calls[all_calls['extracted_expiry'] == _nearest_expiry]
+                    _np = all_puts[all_puts['extracted_expiry'] == _nearest_expiry]
+                    if not _nc.empty and not _np.empty:
+                        _im = calculate_implied_move(S, _nc, _np, ticker)
+                        if _im:
+                            st.session_state.implied_move_pct = _im['implied_move_pct']
+
                 exposure_type_map = {
                     "Gamma Exposure": "GEX",
                     "Vanna Exposure": "VEX",
@@ -7200,6 +7227,16 @@ elif st.session_state.current_page == "Dashboard":
                 if calls.empty and puts.empty:
                     st.warning("No options data available for the selected dates.")
                     st.stop()
+
+                # Cache implied move % for auto-sync strike range feature
+                if 'extracted_expiry' in calls.columns and not calls.empty and not puts.empty:
+                    _nearest_expiry = pd.to_datetime(selected_expiry_dates[0]).date()
+                    _nc = calls[calls['extracted_expiry'] == _nearest_expiry]
+                    _np = puts[puts['extracted_expiry'] == _nearest_expiry]
+                    if not _nc.empty and not _np.empty:
+                        _im = calculate_implied_move(S, _nc, _np, ticker)
+                        if _im:
+                            st.session_state.implied_move_pct = _im['implied_move_pct']
 
                 if True: # Maintain indentation
                     
@@ -9742,6 +9779,10 @@ elif st.session_state.current_page == "Implied Probabilities":
                     
                     # Calculate implied move
                     implied_move_data = calculate_implied_move(S, nearest_calls, nearest_puts, user_ticker)
+
+                    # Cache implied move % for auto-sync strike range feature
+                    if implied_move_data:
+                        st.session_state.implied_move_pct = implied_move_data['implied_move_pct']
                     
                     # Calculate delta-based probability strikes (industry standard)
                     prob_16_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.16, q, user_ticker)  # ~1 standard deviation
